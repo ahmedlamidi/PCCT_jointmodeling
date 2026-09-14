@@ -67,8 +67,9 @@ def plot(sl, b, channel=None, view=None, label=None, path='profiles.png', title=
         ax = fig.add_subplot(gs[row, :]); axr = fig.add_subplot(gs[row + 1, :], sharex=ax)
         if logy:        # air and head differ ~200x in counts: log axis shows both
             ax.set_yscale('log'); axr.set_yscale('symlog', linthresh=10)
-        ax.fill_between(x, np.maximum(m - 2 * s, 0.5 if logy else -np.inf), m + 2 * s,
-                        color='C0', alpha=0.25, lw=0, label='output $\\pm$2 std')
+        if s.max() > 0:     # no std (WGAN, or a preview): no band and no legend entry for one
+            ax.fill_between(x, np.maximum(m - 2 * s, 0.5 if logy else -np.inf), m + 2 * s,
+                            color='C0', alpha=0.25, lw=0, label='output $\\pm$2 std')
         ax.plot(x, i, color='0.55', lw=1.0, label='distorted input')
         ax.plot(x, l, color='k', lw=1.5, label='clean label')
         ax.plot(x, m, color='C0', lw=1.2, label=short)
@@ -76,7 +77,8 @@ def plot(sl, b, channel=None, view=None, label=None, path='profiles.png', title=
             ax.plot(x, o, color='C3', lw=1.2, label=other_label)
         ax.set_ylabel('counts'); ax.legend(ncol=5, fontsize=8, loc='upper right')
         ax.set_title(what, fontsize=10, color=colour, loc='left')
-        axr.fill_between(x, -2 * s, 2 * s, color='C0', alpha=0.2, lw=0)
+        if s.max() > 0:
+            axr.fill_between(x, -2 * s, 2 * s, color='C0', alpha=0.2, lw=0)
         axr.axhline(0, color='k', lw=0.8)
         axr.plot(x, i - l, color='0.55', lw=0.9, label='input - label   RMSE %.2f' % _rmse(i - l))
         axr.plot(x, m - l, color='C0', lw=0.9, label='%s - label  RMSE %.2f' % (short, _rmse(m - l)))

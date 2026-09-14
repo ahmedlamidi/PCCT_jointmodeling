@@ -68,8 +68,23 @@ C  FIGURE. For one phantom, a crop of the slice's sinogram in a few bins:
    output (+/- 2 std) along one channel over all views and one view across all
    channels (figures/profiles_*.png).
 
-Each phantom's slice is saved as it finishes (outputs/ssim_<train>_Y_on_<arm>/),
-so a resubmit after a TIMEOUT continues where it stopped. --resample redraws.
+ORDER -- earliest result first. The figure phantom's slice runs first, so its
+sinogram figure and time-series profiles (C) are written as soon as that ONE
+phantom is done; then the patch domain (A); then the remaining phantoms (B). The
+JSON is rewritten atomically after each of those steps, with "complete": false in
+its recon block until the last phantom, so a TIMEOUT keeps everything finished.
+Each phantom's slice is also saved as it finishes (outputs/ssim_<train>_Y_on_<arm>/),
+so a resubmit continues where it stopped. --resample redraws.
+
+PREVIEW -- before all of that, a fast first look: the figure phantom with
+--preview_nsamp samples per patch (default 2, ~1/8 of its full cost), written to
+its OWN folders so it can never be mixed into a result:
+    outputs/ssim_<train>_Y_on_<arm>_preview/   slice, and preview.json
+    figures/preview/                           sino_error_* and profiles_*
+A 2-sample mean carries ~8x the Monte-Carlo variance of the 16-sample one, and a
+std from 2 samples means nothing, so the preview draws no uncertainty band. Its
+seeds are the first samples of the full run's. Skipped for --model wgan
+(deterministic). compare_baseline.py never reads it. --preview_nsamp 0 turns it off.
 
 STATUS: see the "Checked" block at the end of this docstring.
 
@@ -287,97 +302,170 @@ def floored(counts):
     return (np.asarray(counts) <= LI_FLOOR).mean((0, 1))
 
 
-def run_recon(a, ds, get_sampler, wd, labels, title):
+def save_json(fp, res):
+    """Rewrite the results after every finished step, atomically: a TIMEOUT or a
+    crash keeps everything done so far, and the file is never half-written."""
+    tmp = fp + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(res, f, indent=2)
+    os.replace(tmp, fp)
+
+
+def recon_setup(a, ds):
     man = ds.man
     if man['nch'] != 1854:
         sys.exit('image domain needs the full detector (generated with --crop 1854); '
                  'this arm has %d channels' % man['nch'])
-    geom = Geometry(nview=man['nview'], nch=man['nch'], npix=man['npix'])
-    parallel = 'parallel' in man.get('geometry', '')
-    air = man.get('air_counts')
-    row = a.row if a.row is not None else man['nrow'] // 2
     phs = a.phantoms if a.phantoms is not None else list(range(len(ds.files)))
     vis = a.vis_phantom if a.vis_phantom is not None else phs[0]
-    print('\nimage domain: %d test phantom(s), row %d, %s-beam FBP, %d samples per patch'
-          % (len(phs), row, 'parallel' if parallel else 'fan', a.nsamp_recon), flush=True)
-    per = []
-    for fi in phs:
-        f = os.path.join(wd, 'slice_ph%03d_row%02d.npz' % (fi, row))
-        sl = None
-        if os.path.exists(f) and not a.resample:
-            z = dict(np.load(f))
-            if int(z['nsamp']) == a.nsamp_recon:
-                sl = z; print('  phantom %d: reusing %s' % (fi, f))
-        if sl is None:
-            sl = slice_posterior(ds, fi, get_sampler(), row, man['stride'], a.nsamp_recon, a.batch)
-            np.savez(f, **sl)
-        air_f = np.asarray(air) if air is not None else sl['label'].max((0, 1))
-        Rt = recon(sl['label'], air_f, geom, parallel)
-        Rm = recon(sl['mean'], air_f, geom, parallel)
-        Rx = recon(sl['input'], air_f, geom, parallel)
-        np.savez(os.path.join(wd, 'recon_ph%03d_row%02d.npz' % (fi, row)),
-                 label=Rt.astype(np.float32), mean=Rm.astype(np.float32), input=Rx.astype(np.float32))
-        L = Rt.max((1, 2)) - Rt.min((1, 2))
-        fl = {k: floored(sl[k]) for k in ('label', 'mean', 'input')}
-        print('  phantom %d: sinogram values at the %.1f-count floor (worst bin): '
-              'label %.3f%%  mean %.3f%%  input %.3f%%'
-              % (fi, LI_FLOOR, *(100 * fl[k].max() for k in ('label', 'mean', 'input'))))
-        per.append(dict(phantom=fi, data_range=L.tolist(),
-                        floored={k: v.tolist() for k, v in fl.items()},
-                        ssim=ssim_windowed(Rm, Rt, L).tolist(),
-                        ssim_input=ssim_windowed(Rx, Rt, L).tolist(),
-                        rmse=np.sqrt(((Rm - Rt) ** 2).mean((1, 2))).tolist()))
-        if fi == vis:
-            figure(sl, a.vis_bins, a.vis_ch, labels, fi, title, a.nsamp_recon, a.model)
-            for b in a.vis_bins:
-                plot_profiles.plot(sl, b, None, None, labels[b],
-                                   os.path.join(FIGS, 'profiles_%s_ph%03d_bin%d.png' % (title, fi, b + 1)),
-                                   '%s -- test phantom %d,' % (title, fi),
-                                   main_label='WGAN output' if a.model == 'wgan' else None)
-            of = os.path.join(a.other_wd, 'slice_ph%03d_row%02d.npz' % (fi, row))
-            if os.path.exists(of):          # the other model has run: diffusion vs WGAN, one figure
-                o = dict(np.load(of))
-                ed, wg = (sl, o) if a.model == 'edm' else (o, sl)
-                for b in a.vis_bins:
-                    plot_profiles.plot(ed, b, None, None, labels[b],
-                                       os.path.join(FIGS, 'profiles_compare_%s_on_%s_ph%03d_bin%d.png'
-                                                    % (a.train_arm, a.arm, fi, b + 1)),
-                                       'diffusion vs WGAN -- test phantom %d,' % fi,
-                                       other=wg, other_label='WGAN', main_label='diffusion (posterior mean)')
+    # the figure phantom FIRST: its sinogram figure and time-series profiles then
+    # exist after ONE phantom, not after every phantom and the patch domain
+    order = ([vis] + [f for f in phs if f != vis]) if vis in phs else list(phs)
+    cx = dict(geom=Geometry(nview=man['nview'], nch=man['nch'], npix=man['npix']),
+              parallel='parallel' in man.get('geometry', ''), air=man.get('air_counts'),
+              row=a.row if a.row is not None else man['nrow'] // 2, order=order, vis=vis)
+    print('\nimage domain: %d test phantom(s), row %d, %s-beam FBP, %d samples per patch; '
+          'order %s (figure phantom first)'
+          % (len(order), cx['row'], 'parallel' if cx['parallel'] else 'fan', a.nsamp_recon, order),
+          flush=True)
+    return cx
 
+
+def recon_phantom(a, ds, get_sampler, wd, labels, title, cx, fi):
+    """One test phantom: sample (or reuse) its slice, reconstruct and score it, and
+    draw the figures if it is the figure phantom. Returns its result."""
+    row, geom, parallel, air = cx['row'], cx['geom'], cx['parallel'], cx['air']
+    f = os.path.join(wd, 'slice_ph%03d_row%02d.npz' % (fi, row))
+    sl = None
+    if os.path.exists(f) and not a.resample:
+        z = dict(np.load(f))
+        if int(z['nsamp']) == a.nsamp_recon:
+            sl = z; print('  phantom %d: reusing %s' % (fi, f))
+    if sl is None:
+        sl = slice_posterior(ds, fi, get_sampler(), row, ds.man['stride'], a.nsamp_recon, a.batch)
+        np.savez(f, **sl)
+    air_f = np.asarray(air) if air is not None else sl['label'].max((0, 1))
+    Rt = recon(sl['label'], air_f, geom, parallel)
+    Rm = recon(sl['mean'], air_f, geom, parallel)
+    Rx = recon(sl['input'], air_f, geom, parallel)
+    np.savez(os.path.join(wd, 'recon_ph%03d_row%02d.npz' % (fi, row)),
+             label=Rt.astype(np.float32), mean=Rm.astype(np.float32), input=Rx.astype(np.float32))
+    L = Rt.max((1, 2)) - Rt.min((1, 2))
+    fl = {k: floored(sl[k]) for k in ('label', 'mean', 'input')}
+    print('  phantom %d: sinogram values at the %.1f-count floor (worst bin): '
+          'label %.3f%%  mean %.3f%%  input %.3f%%'
+          % (fi, LI_FLOOR, *(100 * fl[k].max() for k in ('label', 'mean', 'input'))))
+    res = dict(phantom=fi, data_range=L.tolist(),
+               floored={k: v.tolist() for k, v in fl.items()},
+               ssim=ssim_windowed(Rm, Rt, L).tolist(),
+               ssim_input=ssim_windowed(Rx, Rt, L).tolist(),
+               rmse=np.sqrt(((Rm - Rt) ** 2).mean((1, 2))).tolist())
+    if fi == cx['vis']:
+        figure(sl, a.vis_bins, a.vis_ch, labels, fi, title, a.nsamp_recon, a.model)
+        for b in a.vis_bins:
+            plot_profiles.plot(sl, b, None, None, labels[b],
+                               os.path.join(FIGS, 'profiles_%s_ph%03d_bin%d.png' % (title, fi, b + 1)),
+                               '%s -- test phantom %d,' % (title, fi),
+                               main_label='WGAN output' if a.model == 'wgan' else None)
+        of = os.path.join(a.other_wd, 'slice_ph%03d_row%02d.npz' % (fi, row))
+        if os.path.exists(of):          # the other model has run: diffusion vs WGAN, one figure
+            o = dict(np.load(of))
+            ed, wg = (sl, o) if a.model == 'edm' else (o, sl)
+            for b in a.vis_bins:
+                plot_profiles.plot(ed, b, None, None, labels[b],
+                                   os.path.join(FIGS, 'profiles_compare_%s_on_%s_ph%03d_bin%d.png'
+                                                % (a.train_arm, a.arm, fi, b + 1)),
+                                   'diffusion vs WGAN -- test phantom %d,' % fi,
+                                   other=wg, other_label='WGAN', main_label='diffusion (posterior mean)')
+    return res
+
+
+def run_preview(a, ds, get_sampler, wd, labels, tag, cx):
+    """Fast first look at the figure phantom (see PREVIEW in the docstring).
+    Writes only to its own folders; returns nothing that enters the results."""
+    n, fi, row = a.preview_nsamp, cx['vis'], cx['row']
+    pwd = wd + '_preview'; os.makedirs(pwd, exist_ok=True)
+    pfig = os.path.join(FIGS, 'preview'); os.makedirs(pfig, exist_ok=True)
+    f = os.path.join(pwd, 'slice_ph%03d_row%02d.npz' % (fi, row))
+    sl = None
+    if os.path.exists(f) and not a.resample:
+        z = dict(np.load(f))
+        if int(z['nsamp']) == n:
+            sl = z; print('\npreview: reusing %s' % f)
+    if sl is None:
+        print('\npreview: phantom %d with %d samples per patch -> %s  (not used in any result)'
+              % (fi, n, pfig), flush=True)
+        sl = slice_posterior(ds, fi, get_sampler(), row, ds.man['stride'], n, a.batch)
+        np.savez(f, **sl)
+    shown = dict(sl); shown['std'] = np.zeros_like(sl['std'])   # no band from so few samples
+    ptitle = '%s_PREVIEW_%dsamples' % (tag, n)
+    figure(shown, a.vis_bins, a.vis_ch, labels, fi, ptitle, n, a.model, outdir=pfig, preview=True)
+    for b in a.vis_bins:
+        plot_profiles.plot(shown, b, None, None, labels[b],
+                           os.path.join(pfig, 'profiles_%s_ph%03d_bin%d.png' % (ptitle, fi, b + 1)),
+                           'PREVIEW, %d samples per patch -- test phantom %d,' % (n, fi),
+                           main_label='posterior mean of %d samples (PREVIEW)' % n)
+    air_f = np.asarray(cx['air']) if cx['air'] is not None else sl['label'].max((0, 1))
+    Rt = recon(sl['label'], air_f, cx['geom'], cx['parallel'])
+    Rm = recon(sl['mean'], air_f, cx['geom'], cx['parallel'])
+    ss = ssim_windowed(Rm, Rt, Rt.max((1, 2)) - Rt.min((1, 2)))
+    rmse = float(np.sqrt(((sl['mean'] - sl['label']) ** 2).mean()))
+    with open(os.path.join(pwd, 'preview.json'), 'w') as fh:
+        json.dump(dict(preview=True, phantom=fi, row=row, nsamp=n, sinogram_rmse_counts=rmse,
+                       fbp_ssim_per_bin=np.asarray(ss).tolist(), bins=labels,
+                       note='PREVIEW only: %d samples per patch. Not a result; the full run '
+                            'uses %d and writes its own JSON.' % (n, a.nsamp_recon)), fh, indent=2)
+    print('preview: sinogram RMSE %.3f counts, FBP SSIM per bin %s  -- PREVIEW only'
+          % (rmse, np.round(ss, 3).tolist()), flush=True)
+
+
+def recon_summary(a, per, labels, cx, final):
+    """Aggregate over the phantoms finished so far. `final` prints the full table;
+    before that, one line, and the JSON carries "complete": false."""
+    per = sorted(per, key=lambda q: q['phantom'])
+    row, n_total = cx['row'], len(cx['order'])
     S = np.array([q['ssim'] for q in per]); Sx = np.array([q['ssim_input'] for q in per])
-    print('\n--- IMAGE domain: FBP slice (row %d), per-bin windowed SSIM, mean over %d phantom(s) ---'
-          % (row, len(per)))
     Fl = np.array([q['floored']['label'] for q in per]).max(0)       # worst phantom, per bin
     ok = Fl <= MAX_FLOORED
-    print('  %-12s %9s %9s   %s' % ('bin', 'model', 'input', 'label at floor'))
-    for b in range(S.shape[1]):
-        if ok[b]:
-            print('  %-12s %9.4f %9.4f   %6.2f%%' % (labels[b], S[:, b].mean(), Sx[:, b].mean(), 100 * Fl[b]))
-        else:
-            print('  %-12s %9s %9s   %6.2f%%  -> n/a: line integral not measurable, left out'
-                  % (labels[b], 'n/a', 'n/a', 100 * Fl[b]))
-    if ok.any():
-        print('  %-12s %9.4f %9.4f   (%d of %d bins)'
-              % ('valid bins', S[:, ok].mean(), Sx[:, ok].mean(), ok.sum(), len(ok)))
-    return dict(row=row, nsamp=a.nsamp_recon, fbp='parallel' if parallel else 'fan',
+    if not final:
+        print('  image domain so far: %d of %d phantoms, valid-bins SSIM %s (input %s)'
+              % (len(per), n_total,
+                 '%.4f' % S[:, ok].mean() if ok.any() else 'n/a',
+                 '%.4f' % Sx[:, ok].mean() if ok.any() else 'n/a'), flush=True)
+    else:
+        print('\n--- IMAGE domain: FBP slice (row %d), per-bin windowed SSIM, mean over %d phantom(s) ---'
+              % (row, len(per)))
+        print('  %-12s %9s %9s   %s' % ('bin', 'model', 'input', 'label at floor'))
+        for b in range(S.shape[1]):
+            if ok[b]:
+                print('  %-12s %9.4f %9.4f   %6.2f%%' % (labels[b], S[:, b].mean(), Sx[:, b].mean(), 100 * Fl[b]))
+            else:
+                print('  %-12s %9s %9s   %6.2f%%  -> n/a: line integral not measurable, left out'
+                      % (labels[b], 'n/a', 'n/a', 100 * Fl[b]))
+        if ok.any():
+            print('  %-12s %9.4f %9.4f   (%d of %d bins)'
+                  % ('valid bins', S[:, ok].mean(), Sx[:, ok].mean(), ok.sum(), len(ok)))
+    return dict(row=row, nsamp=a.nsamp_recon, fbp='parallel' if cx['parallel'] else 'fan',
                 fbp_window=FBP_WINDOW, li_floor=LI_FLOOR, phantoms=per, ssim_per_bin=S.mean(0).tolist(),
                 ssim=float(S[:, ok].mean()) if ok.any() else None,
                 ssim_input_per_bin=Sx.mean(0).tolist(),
                 ssim_input=float(Sx[:, ok].mean()) if ok.any() else None,
-                valid_bins=ok.tolist(), max_floored=MAX_FLOORED)
+                valid_bins=ok.tolist(), max_floored=MAX_FLOORED,
+                phantoms_done=len(per), phantoms_total=n_total, complete=bool(final))
 
 
 # ---------------------------------------------------------------- C: figure
-def figure(sl, bins, ch, labels, fi, title, nsamp, model='edm'):
+def figure(sl, bins, ch, labels, fi, title, nsamp, model='edm', outdir=None, preview=False):
     import matplotlib; matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     nch = sl['label'].shape[1]
     c0, c1 = ch if ch else (nch // 2 - 200, nch // 2 + 200)
     heads = ['distorted input', 'clean label',
-             'WGAN output' if model == 'wgan' else 'posterior mean (%d samples)' % nsamp,
+             'WGAN output' if model == 'wgan' else
+             ('posterior mean (%d samples, PREVIEW)' if preview else 'posterior mean (%d samples)') % nsamp,
              'error: output - label',
-             'std (none: deterministic)' if model == 'wgan' else 'posterior std']
+             'std (none: deterministic)' if model == 'wgan' else
+             ('std: not shown (%d samples is too few)' % nsamp if preview else 'posterior std')]
     fig, ax = plt.subplots(len(bins), 5, figsize=(18, 3.1 * len(bins) + 0.9), squeeze=False)
     for r, b in enumerate(bins):
         A = {k: sl[k][:, c0:c1, b] for k in ('input', 'label', 'mean', 'std')}
@@ -398,8 +486,9 @@ def figure(sl, bins, ch, labels, fi, title, nsamp, model='edm'):
     fig.suptitle('%s -- test phantom %d, sinogram of detector row %d, channels %d-%d'
                  % (title, fi, int(sl['row']), c0, c1 - 1))
     fig.tight_layout()
-    os.makedirs(FIGS, exist_ok=True)
-    p = os.path.join(FIGS, 'sino_error_%s_ph%03d.png' % (title.replace(' ', '_'), fi))
+    od = outdir or FIGS
+    os.makedirs(od, exist_ok=True)
+    p = os.path.join(od, 'sino_error_%s_ph%03d.png' % (title.replace(' ', '_'), fi))
     fig.savefig(p, dpi=120, bbox_inches='tight'); plt.close(fig)
     print('  wrote', p)
 
@@ -417,6 +506,9 @@ def main():
     ap.add_argument('--npatch', type=int, default=256)
     ap.add_argument('--nsamp', type=int, default=256, help='patch domain; 256 = coverage.py')
     ap.add_argument('--nsamp_recon', type=int, default=16)
+    ap.add_argument('--preview_nsamp', type=int, default=2,
+                    help='fast first look at the figure phantom, into its own folders '
+                         '(outputs/..._preview, figures/preview); 0 = off')
     ap.add_argument('--steps', type=int, default=18)
     ap.add_argument('--batch', type=int, default=2048, help='patches per model call (image domain)')
     ap.add_argument('--row', type=int, default=None, help='detector row = slice (default nrow//2)')
@@ -455,12 +547,32 @@ def main():
     fp = os.path.join(OUT, 'ssim_%s.json' % tag)
     res = json.load(open(fp)) if os.path.exists(fp) else {}
     res.update(train_arm=a.train_arm, arm=arm, bins=labels)
+
+    # Earliest result first (see ORDER in the docstring): the figure phantom's slice
+    # -> sinogram figure + time-series profiles; then the patch domain; then the
+    # remaining phantoms. The JSON is rewritten after every step.
+    cx = recon_setup(a, ds) if 'recon' in a.parts else None
+    order = cx['order'] if cx else []
+    per = []
+
+    def step_done(what):
+        save_json(fp, res)
+        print('  [saved after %s -> %s]' % (what, fp), flush=True)
+
+    if (order and cx['vis'] in order and a.model != 'wgan'
+            and 0 < a.preview_nsamp < a.nsamp_recon):
+        run_preview(a, ds, get_sampler, wd, labels, tag, cx)
+    if order:
+        per.append(recon_phantom(a, ds, get_sampler, wd, labels, tag, cx, order[0]))
+        res['recon'] = recon_summary(a, per, labels, cx, final=len(order) == 1)
+        step_done('figure phantom %d' % order[0])
     if 'patch' in a.parts:
         res['patch'] = run_patch(a, ds, get_sampler, wd, labels, a.train_arm)
-    if 'recon' in a.parts:
-        res['recon'] = run_recon(a, ds, get_sampler, wd, labels, tag)
-    with open(fp, 'w') as f:
-        json.dump(res, f, indent=2)
+        step_done('patch domain')
+    for fi in order[1:]:
+        per.append(recon_phantom(a, ds, get_sampler, wd, labels, tag, cx, fi))
+        res['recon'] = recon_summary(a, per, labels, cx, final=len(per) == len(order))
+        step_done('phantom %d (%d of %d)' % (fi, len(per), len(order)))
     print('\nwrote', fp)
 
 

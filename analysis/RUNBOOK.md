@@ -149,12 +149,21 @@ cd ~/PCCT_jointmodeling/analysis
   ```bash
   sbatch --account=<group> --qos=<group> slurm/hipergator/ssim_diffusion.sh
   ```
-  Checkpoints in `logs/ssim_<id>.out`:
-  - `posterior-mean RMSE ... (coverage.py: 4.2591 ...)` — the two agree to a few decimals
-  - `chunk 1/21 ... eta N min` — the real time per phantom; three phantoms in total
+  Checkpoints in `logs/ssim_<id>.out`, earliest result first:
+  - `preview: phantom 0 with 2 samples per patch -> .../figures/preview` then
+    `preview: sinogram RMSE ... -- PREVIEW only` — a first look in ~1/8 of a phantom's time.
+    Figures in `figures/preview/`, data in `outputs/ssim_..._preview/`. Not a result: no
+    uncertainty band, never read by step 11. `PREVIEW_NSAMP=0` in `--export` turns it off.
+  - `chunk 1/21 ... eta N min` — phantom 0 in full, the figure phantom; the eta is its real time
+  - `wrote .../figures/sino_error_*.png` and `figures/profiles_*_bin{1,5,9}.png` — the
+    sinogram and **time-series** figures, ready as soon as phantom 0 is done
+  - `[saved after figure phantom 0 ...]`, then the patch domain:
+    `posterior-mean RMSE ... (coverage.py: 4.2591 ...)` — the two agree to a few decimals
+  - phantoms 1 and 2, each followed by `[saved after ...]`
   - ends with `wrote .../outputs/ssim_baseline3d_pu_matched_Y_on_baseline3d_pu_matched.json`
-    and `figures/sino_error_*.png`, `figures/profiles_*_bin{1,5,9}.png`
-  On TIMEOUT, resubmit the same line; finished phantoms are kept.
+  The JSON is rewritten after every step (`"complete": false` until the last phantom), so
+  a TIMEOUT keeps everything finished; resubmit the same line and it continues. Step 11
+  can run before it ends — its SSIM rows then read e.g. `0.8123 (1/3 ph.)`.
   For another channel, view or bin — no GPU, also works on a copied-home slice file:
   ```bash
   cd src/diffusion && python plot_profiles.py \

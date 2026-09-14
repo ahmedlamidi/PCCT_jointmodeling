@@ -19,8 +19,17 @@
 #     sbatch --account=$GROUP --qos=$GROUP slurm/hipergator/ssim_diffusion.sh
 #
 # The image domain dominates the time: 3 phantoms x 41,580 patches x NSAMP_RECON
-# samples. The log prints an ETA after the first chunk. Each finished phantom is
-# saved, so if it hits TIMEOUT, resubmit the same line and it continues.
+# samples. The log prints an ETA after the first chunk.
+#
+# First a PREVIEW: phantom 0 with 2 samples per patch (~1/8 of its full time) ->
+# figures/preview/ and outputs/ssim_..._preview/. A quick look only -- not a result,
+# no uncertainty band, never read by compare_baseline.py.
+#
+# Then, earliest result first: phantom 0's slice -> its sinogram figure and
+# time-series profiles are written as soon as that ONE phantom is done; then the
+# patch domain; then phantoms 1 and 2. The JSON is rewritten after each step
+# ("complete": false until the last), and each finished phantom's slice is saved,
+# so on TIMEOUT resubmit the same line and it continues.
 #
 # The WGAN, scored the same way (one pass per patch, much faster):
 #
@@ -38,5 +47,7 @@ nvidia-smi -L || true
 ARM=${ARM:-baseline3d_pu_matched}
 MODEL=${MODEL:-edm}                 # edm = diffusion; wgan = the baseline (nsamp forced to 1)
 NSAMP_RECON=${NSAMP_RECON:-16}
+PREVIEW_NSAMP=${PREVIEW_NSAMP:-2}   # fast first look at phantom 0 -> figures/preview/; 0 = off
 cd src/diffusion
-srun python -u ssim_eval.py --model "$MODEL" --train_arm "$ARM" --nsamp 256 --nsamp_recon "$NSAMP_RECON"
+srun python -u ssim_eval.py --model "$MODEL" --train_arm "$ARM" --nsamp 256 --nsamp_recon "$NSAMP_RECON" \
+    --preview_nsamp "$PREVIEW_NSAMP"

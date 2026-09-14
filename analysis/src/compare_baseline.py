@@ -54,7 +54,11 @@ def main():
         if J is None or dom not in J:
             return 'run ssim_eval.py'
         v = J[dom].get(key)
-        return 'n/a' if v is None else '%.4f' % v
+        if v is None:
+            return 'n/a'
+        if J[dom].get('complete') is False:     # ssim_eval.py saves after every phantom
+            return '%.4f (%d/%d ph.)' % (v, J[dom]['phantoms_done'], J[dom]['phantoms_total'])
+        return '%.4f' % v
     L = D['levels']; i90 = L.index(0.9)
     per_bin90 = sum(d['per_bin'][i90]) / len(d['per_bin'][i90])
 
