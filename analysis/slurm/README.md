@@ -1,5 +1,13 @@
 # SLURM scripts
 
+The scripts in this folder are for **GAIVI** (USF). For **HiPerGator** (UF), use
+`hipergator/` instead — different partitions, conda setup and storage rules; see
+`hipergator/README.md`.
+
+**Create `logs/` before submitting** (`mkdir -p logs` in `analysis/`). SLURM opens
+`--output=logs/...` when the job *starts*, before the script's own `mkdir -p logs`
+runs, so on a fresh checkout the first job's log has nowhere to go.
+
 Submit from `analysis/` (the scripts `cd "$SLURM_SUBMIT_DIR"` and then into `src/`):
 
 ```bash
