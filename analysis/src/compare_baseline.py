@@ -44,13 +44,28 @@ def main():
                  ' -- rerun one of them so both use the same patches'
                  % (W.get('npatch'), W.get('eval_seed'), D.get('npatch'), D.get('eval_seed')))
     w, d = W['results'][a.arm], D['results'][a.arm]
+    # windowed SSIM from diffusion/ssim_eval.py (--model edm and --model wgan), if run
+    tag = '%s_Y_on_%s' % (a.arm, a.arm)
+    opt = lambda p: json.load(open(p)) if os.path.exists(p) else None
+    SE = opt(os.path.join(OUT, 'ssim_%s.json' % tag))
+    SW = opt(os.path.join(OUT, 'ssim_wgan_%s.json' % tag))
+
+    def win(J, dom, key='ssim'):
+        if J is None or dom not in J:
+            return 'run ssim_eval.py'
+        v = J[dom].get(key)
+        return 'n/a' if v is None else '%.4f' % v
     L = D['levels']; i90 = L.index(0.9)
     per_bin90 = sum(d['per_bin'][i90]) / len(d['per_bin'][i90])
 
     rows = [
         ('RMSE (counts)',                 '%.4f' % w['rmse'],        '%.4f' % d['rmse_all']),
         ('PSNR (dB)',                     '%.2f' % w['psnr'],        '%.2f' % d['psnr']),
-        ('SSIM',                          '%.4f' % w['ssim'],        '%.4f' % d['ssim']),
+        ('SSIM global (~1 for anything)', '%.4f' % w['ssim'],        '%.4f' % d['ssim']),
+        ('SSIM windowed, patches',        win(SW, 'patch'),          win(SE, 'patch')),
+        ('  same, uncorrected input',     win(SW, 'patch', 'ssim_input'), win(SE, 'patch', 'ssim_input')),
+        ('SSIM windowed, FBP slice',      win(SW, 'recon'),          win(SE, 'recon')),
+        ('  same, uncorrected input',     win(SW, 'recon', 'ssim_input'), win(SE, 'recon', 'ssim_input')),
         ('manifold residual, estimate',   '%.4f' % w['resid_pred'],  '%.4f' % d['resid_postmean']),
         ('manifold residual, truth',      '%.4f' % w['resid_truth'], '%.4f' % d['resid_truth']),
         ('manifold residual, samples',    'n/a',                     '%.4f' % d['resid_samples']),
@@ -66,9 +81,15 @@ def main():
           ' model\n(0.886 at nominal 0.90 with 256 samples) -- see diffusion/manifold.py.'
           % D['nsamp'])
 
+    if SE and 'recon' in SE:
+        print('FBP-slice SSIM: mean over valid bins only (a bin whose clean label is at the'
+              ' count floor is n/a -- expect 20-29 keV);\nthe diffusion column is a %d-sample'
+              ' posterior mean, whose leftover Monte-Carlo noise lowers it slightly.'
+              % SE['recon']['nsamp'])
     out = os.path.join(OUT, 'compare_%s.json' % a.arm)
     with open(out, 'w') as f:
-        json.dump(dict(arm=a.arm, npatch=W['npatch'], wgan=w, diffusion=d), f, indent=2)
+        json.dump(dict(arm=a.arm, npatch=W['npatch'], wgan=w, diffusion=d,
+                       ssim_windowed=dict(wgan=SW, diffusion=SE)), f, indent=2)
     print('wrote', out)
 
 

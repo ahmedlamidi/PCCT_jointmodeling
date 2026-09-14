@@ -33,7 +33,7 @@ srun --ntasks=1 python -u smoke_test.py || { echo "SMOKE TEST FAILED - stopping"
 echo "=== train EDM on $ARM, target Y (bin counts) ==="
 srun --ntasks=1 python -u train.py \
     --arm "$ARM" --target Y \
-    --iters "$ITERS" --batch "$BATCH" --resume
+    --iters "$ITERS" --batch "$BATCH" --resume --preload
 
 echo "=== evaluate on the held-out TEST split of $ARM ==="
 srun --ntasks=1 python -u coverage.py \

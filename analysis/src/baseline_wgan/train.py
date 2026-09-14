@@ -36,6 +36,10 @@ def main():
     ap.add_argument('--epochs', type=float, default=None,
                     help='overrides --iters: passes over the train patches. Morovati et al. '
                          'train 40 epochs, which on our data is ~1.09M iterations at batch 64.')
+    ap.add_argument('--preload', action='store_true',
+                    help='load every train phantom into RAM once (~0.77 GB each) instead of '
+                         're-decompressing a file every 64 batches -- measured at ~90%% of the '
+                         'WGAN iteration time. Refuses to start if the memory is not there.')
     ap.add_argument('--resume', action='store_true',
                     help='continue from out/ckpt.pt if it exists (no-op otherwise), so a '
                          'run longer than the SLURM time limit can be resubmitted')
@@ -60,7 +64,7 @@ def main():
 
     out = a.out or os.path.join(OUT, 'wgan_%s_%s' % (a.arm, a.target))
     os.makedirs(out, exist_ok=True)
-    ds = DiffusionPatches(a.arm, 'train', a.patch, a.target)
+    ds = DiffusionPatches(a.arm, 'train', a.patch, a.target, preload=a.preload)
     ch = ds.tgt_ch
     if a.epochs is not None:
         n_patch = ds.man['patches_per_projection'] * ds.man['nview'] * len(ds.files)

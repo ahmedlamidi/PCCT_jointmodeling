@@ -37,7 +37,7 @@ cd src/baseline_wgan
 echo "=== train WGAN-GP baseline on $ARM ==="
 srun --ntasks=1 python -u train.py \
     --arm "$ARM" --target Y \
-    --epochs "$EPOCHS" --batch "$BATCH" --resume \
+    --epochs "$EPOCHS" --batch "$BATCH" --resume --preload \
     --lam_perc "$LAM_PERC"
 
 echo "=== evaluate on the held-out TEST split of $ARM ==="

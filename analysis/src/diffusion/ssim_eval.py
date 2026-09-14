@@ -40,7 +40,16 @@ B  IMAGE DOMAIN. One axial slice per test phantom. A slice is one detector row,
    Why floor 0.5 counts (my choice, not from a paper): a zero count gives
    -log(1e-3/air) ~ 14 against ~3 for a typical ray, and FBP spreads that spike
    over the image. The fraction of sinogram values at the floor is printed and
-   saved per phantom; if it is not ~0 for the label and the mean, distrust B.
+   saved per phantom. A bin whose CLEAN LABEL is at the floor in more than 1% of
+   the sinogram (MAX_FLOORED, my choice) is reported n/a and left out of the
+   valid-bins mean: its line integral is not measurable, so its FBP scores the
+   floor, not the model.
+
+   Expect bin 1 (20-29 keV) to be n/a. Computed with this repo's forward model at
+   the matched settings (closed top bin, same flux as the manifest air counts):
+   the ideal 20-29 keV count is 0.85 behind 15 cm of soft tissue, 0.28 behind
+   17.5 cm, 0.04-0.06 with bone on the path. Every other bin keeps >= 3 counts
+   on those paths. Bin 1 is still scored in A (no log there).
 
    The posterior mean here averages --nsamp_recon samples (default 16), not 256:
    B has ~500x the patches of A. A 16-sample mean still carries Monte-Carlo noise
@@ -55,6 +64,9 @@ C  FIGURE. For one phantom, a crop of the slice's sinogram in a few bins:
    distorted input, clean label, posterior mean, error (mean - label) and
    posterior std, in counts. Error and std share one colour scale. The std is
    E[x^2] - E[x]^2 after blending overlapping patches -- display only.
+   Plus, per bin, plot_profiles.plot: the whole sinogram, then input / label /
+   output (+/- 2 std) along one channel over all views and one view across all
+   channels (figures/profiles_*.png).
 
 Each phantom's slice is saved as it finishes (outputs/ssim_<train>_Y_on_<arm>/),
 so a resubmit after a TIMEOUT continues where it stopped. --resample redraws.
@@ -72,8 +84,14 @@ Checked (on the development machine, no torch, 2026-09-14):
   - the band/stitch/line-integral/FBP path end to end, with a stand-in "model"
     that returns its input: the result must equal the same computation done
     directly on the full arrays.
-NOT executed: the torch sampling path (Sampler). The first HiPerGator run is its
-first run.
+NOT executed: the torch paths (Sampler, WganSampler). The first HiPerGator run is
+their first run.
+
+WGAN. --model wgan scores the baseline generator the same way (same patches, same
+band, same FBP, same metric), with nsamp = 1: it is deterministic. Files are named
+ssim_wgan_<train>_Y_on_<arm>*; compare_baseline.py reads both JSONs. Whichever of
+the two runs second also writes figures/profiles_compare_*: input, label,
+diffusion and WGAN on one sinogram trace.
 """
 import argparse, json, os, sys, time
 import numpy as np
@@ -87,9 +105,11 @@ from data import DiffusionPatches
 from stitch import hann2d, _starts
 from metrics import ssim_windowed
 from projector import Geometry
+import plot_profiles
 
 LI_FLOOR = 0.5           # counts; floor before -log (see docstring, B)
 FBP_WINDOW = 'hann'      # ramp x Hann to the image Nyquist (projector.fbp_parallel)
+MAX_FLOORED = 0.01       # a bin whose LABEL is at the floor in >1% of the sinogram is n/a in B
 
 
 class Sampler:
@@ -114,6 +134,27 @@ class Sampler:
         x = self._sample(self.net, (c.shape[0], self.tgt_ch) + tuple(c.shape[2:]), cond=c,
                          steps=self.steps, device=self.device, generator=g)
         return x.cpu().numpy()
+
+
+class WganSampler:
+    """The trained WGAN generator, loaded as baseline_wgan/evaluate.py does.
+    Deterministic, one output per input: the seed is ignored, and main() forces
+    --nsamp and --nsamp_recon to 1 (std is then 0 everywhere)."""
+
+    def __init__(self, ckpt, device=None):
+        import torch
+        from models import Generator
+        self.torch = torch
+        self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        d = torch.load(ckpt, map_location=self.device)
+        self.G = Generator(ch=d['ch'], base=d['cfg']['base']).to(self.device)
+        self.G.load_state_dict(d['G']); self.G.eval()
+        self.trained_on, self.it = d['cfg']['arm'], d['it']
+
+    def __call__(self, cond, seed):
+        with self.torch.no_grad():
+            c = self.torch.from_numpy(np.ascontiguousarray(cond, np.float32)).to(self.device)
+            return self.G(c).cpu().numpy()
 
 
 def bin_labels(man):
@@ -168,14 +209,22 @@ def run_patch(a, ds, get_sampler, wd, labels, trained_on):
         print('  %-12s %9.4f %9.4f %9.4f' % (labels[b], s_m[:, b].mean(),
                                             np.percentile(s_m[:, b], 10), s_x[:, b].mean()))
     print('  %-12s %9.4f %9s %9.4f' % ('all bins', s_m.mean(), '', s_x.mean()))
-    cf = os.path.join(OUT, 'coverage_%s_Y.json' % trained_on)
     chk = ''
-    if os.path.exists(cf):
-        cj = json.load(open(cf))
-        r = cj['results'].get(a.arm or trained_on)
-        if r and cj.get('nsamp') == a.nsamp and cj.get('npatch') == a.npatch:
-            chk = '   (coverage.py: %.4f -- should agree to a few decimals)' % r['rmse_all']
-    print('  posterior-mean RMSE %.4f counts%s' % (rmse, chk))
+    if a.model == 'wgan':
+        cf = os.path.join(OUT, 'wgan_eval_%s.json' % trained_on)
+        if os.path.exists(cf):
+            cj = json.load(open(cf))
+            r = cj['results'].get(a.arm)
+            if r and cj.get('npatch') == a.npatch:
+                chk = '   (evaluate.py: %.4f -- should agree to a few decimals)' % r['rmse']
+    else:
+        cf = os.path.join(OUT, 'coverage_%s_Y.json' % trained_on)
+        if os.path.exists(cf):
+            cj = json.load(open(cf))
+            r = cj['results'].get(a.arm)
+            if r and cj.get('nsamp') == a.nsamp and cj.get('npatch') == a.npatch:
+                chk = '   (coverage.py: %.4f -- should agree to a few decimals)' % r['rmse_all']
+    print('  %s RMSE %.4f counts%s' % ('WGAN output' if a.model == 'wgan' else 'posterior-mean', rmse, chk))
     return dict(npatch=int(len(pm)), nsamp=a.nsamp, data_range=np.asarray(L).tolist(),
                 ssim_per_bin=s_m.mean(0).tolist(), ssim_p10_per_bin=np.percentile(s_m, 10, 0).tolist(),
                 ssim=float(s_m.mean()), ssim_input_per_bin=s_x.mean(0).tolist(),
@@ -279,29 +328,56 @@ def run_recon(a, ds, get_sampler, wd, labels, title):
                         ssim_input=ssim_windowed(Rx, Rt, L).tolist(),
                         rmse=np.sqrt(((Rm - Rt) ** 2).mean((1, 2))).tolist()))
         if fi == vis:
-            figure(sl, a.vis_bins, a.vis_ch, labels, fi, title, a.nsamp_recon)
+            figure(sl, a.vis_bins, a.vis_ch, labels, fi, title, a.nsamp_recon, a.model)
+            for b in a.vis_bins:
+                plot_profiles.plot(sl, b, None, None, labels[b],
+                                   os.path.join(FIGS, 'profiles_%s_ph%03d_bin%d.png' % (title, fi, b + 1)),
+                                   '%s -- test phantom %d,' % (title, fi),
+                                   main_label='WGAN output' if a.model == 'wgan' else None)
+            of = os.path.join(a.other_wd, 'slice_ph%03d_row%02d.npz' % (fi, row))
+            if os.path.exists(of):          # the other model has run: diffusion vs WGAN, one figure
+                o = dict(np.load(of))
+                ed, wg = (sl, o) if a.model == 'edm' else (o, sl)
+                for b in a.vis_bins:
+                    plot_profiles.plot(ed, b, None, None, labels[b],
+                                       os.path.join(FIGS, 'profiles_compare_%s_on_%s_ph%03d_bin%d.png'
+                                                    % (a.train_arm, a.arm, fi, b + 1)),
+                                       'diffusion vs WGAN -- test phantom %d,' % fi,
+                                       other=wg, other_label='WGAN', main_label='diffusion (posterior mean)')
 
     S = np.array([q['ssim'] for q in per]); Sx = np.array([q['ssim_input'] for q in per])
     print('\n--- IMAGE domain: FBP slice (row %d), per-bin windowed SSIM, mean over %d phantom(s) ---'
           % (row, len(per)))
-    print('  %-12s %9s %9s' % ('bin', 'model', 'input'))
+    Fl = np.array([q['floored']['label'] for q in per]).max(0)       # worst phantom, per bin
+    ok = Fl <= MAX_FLOORED
+    print('  %-12s %9s %9s   %s' % ('bin', 'model', 'input', 'label at floor'))
     for b in range(S.shape[1]):
-        print('  %-12s %9.4f %9.4f' % (labels[b], S[:, b].mean(), Sx[:, b].mean()))
-    print('  %-12s %9.4f %9.4f' % ('all bins', S.mean(), Sx.mean()))
+        if ok[b]:
+            print('  %-12s %9.4f %9.4f   %6.2f%%' % (labels[b], S[:, b].mean(), Sx[:, b].mean(), 100 * Fl[b]))
+        else:
+            print('  %-12s %9s %9s   %6.2f%%  -> n/a: line integral not measurable, left out'
+                  % (labels[b], 'n/a', 'n/a', 100 * Fl[b]))
+    if ok.any():
+        print('  %-12s %9.4f %9.4f   (%d of %d bins)'
+              % ('valid bins', S[:, ok].mean(), Sx[:, ok].mean(), ok.sum(), len(ok)))
     return dict(row=row, nsamp=a.nsamp_recon, fbp='parallel' if parallel else 'fan',
                 fbp_window=FBP_WINDOW, li_floor=LI_FLOOR, phantoms=per, ssim_per_bin=S.mean(0).tolist(),
-                ssim=float(S.mean()), ssim_input_per_bin=Sx.mean(0).tolist(),
-                ssim_input=float(Sx.mean()))
+                ssim=float(S[:, ok].mean()) if ok.any() else None,
+                ssim_input_per_bin=Sx.mean(0).tolist(),
+                ssim_input=float(Sx[:, ok].mean()) if ok.any() else None,
+                valid_bins=ok.tolist(), max_floored=MAX_FLOORED)
 
 
 # ---------------------------------------------------------------- C: figure
-def figure(sl, bins, ch, labels, fi, title, nsamp):
+def figure(sl, bins, ch, labels, fi, title, nsamp, model='edm'):
     import matplotlib; matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     nch = sl['label'].shape[1]
     c0, c1 = ch if ch else (nch // 2 - 200, nch // 2 + 200)
-    heads = ['distorted input', 'clean label', 'posterior mean (%d samples)' % nsamp,
-             'error: mean - label', 'posterior std']
+    heads = ['distorted input', 'clean label',
+             'WGAN output' if model == 'wgan' else 'posterior mean (%d samples)' % nsamp,
+             'error: output - label',
+             'std (none: deterministic)' if model == 'wgan' else 'posterior std']
     fig, ax = plt.subplots(len(bins), 5, figsize=(18, 3.1 * len(bins) + 0.9), squeeze=False)
     for r, b in enumerate(bins):
         A = {k: sl[k][:, c0:c1, b] for k in ('input', 'label', 'mean', 'std')}
@@ -332,7 +408,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--train_arm', default='baseline3d_pu_matched', help='arm the model was trained on')
     ap.add_argument('--arm', default=None, help='arm to evaluate on (default: the training arm)')
-    ap.add_argument('--ckpt', default=None, help='default: outputs/edm_<train_arm>_Y/ckpt.pt')
+    ap.add_argument('--model', default='edm', choices=['edm', 'wgan'],
+                    help='edm = diffusion posterior; wgan = the baseline generator '
+                         '(deterministic: --nsamp and --nsamp_recon forced to 1)')
+    ap.add_argument('--ckpt', default=None, help='default: outputs/<model>_<train_arm>_Y/ckpt.pt')
     ap.add_argument('--parts', nargs='+', default=['patch', 'recon'], choices=['patch', 'recon'])
     ap.add_argument('--patch', type=int, default=16)
     ap.add_argument('--npatch', type=int, default=256)
@@ -353,8 +432,12 @@ def main():
 
     arm = a.arm or a.train_arm
     a.arm = arm
-    ckpt = a.ckpt or os.path.join(OUT, 'edm_%s_Y' % a.train_arm, 'ckpt.pt')
-    tag = '%s_Y_on_%s' % (a.train_arm, arm)
+    if a.model == 'wgan':
+        a.nsamp = a.nsamp_recon = 1
+    ckpt = a.ckpt or os.path.join(OUT, '%s_%s_Y' % (a.model, a.train_arm), 'ckpt.pt')
+    tags = {'edm': '%s_Y_on_%s' % (a.train_arm, arm), 'wgan': 'wgan_%s_Y_on_%s' % (a.train_arm, arm)}
+    tag = tags[a.model]
+    a.other_wd = os.path.join(OUT, 'ssim_' + tags['wgan' if a.model == 'edm' else 'edm'])
     wd = os.path.join(OUT, 'ssim_' + tag); os.makedirs(wd, exist_ok=True)
     ds = DiffusionPatches(arm, 'test', a.patch, 'Y')
     labels = bin_labels(ds.man)
@@ -362,7 +445,7 @@ def main():
     box = {}
     def get_sampler():
         if 's' not in box:
-            s = Sampler(ckpt, a.device, a.steps)
+            s = WganSampler(ckpt, a.device) if a.model == 'wgan' else Sampler(ckpt, a.device, a.steps)
             if s.trained_on != a.train_arm:
                 sys.exit('%s was trained on %s, not --train_arm %s' % (ckpt, s.trained_on, a.train_arm))
             print('checkpoint: arm=%s it=%d device=%s' % (s.trained_on, s.it, s.device), flush=True)

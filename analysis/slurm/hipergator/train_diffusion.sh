@@ -37,7 +37,7 @@ srun python -u smoke_test.py || { echo "SMOKE TEST FAILED - stopping"; exit 1; }
 
 echo "=== train EDM on $ARM  $(date) ==="
 srun python -u train.py --arm "$ARM" --target Y \
-    --iters "$ITERS" --batch "$BATCH" --resume
+    --iters "$ITERS" --batch "$BATCH" --resume --preload
 
 echo "=== evaluate on the held-out TEST split  $(date) ==="
 srun python -u coverage.py --ckpt "../../outputs/edm_${ARM}_Y/ckpt.pt" \

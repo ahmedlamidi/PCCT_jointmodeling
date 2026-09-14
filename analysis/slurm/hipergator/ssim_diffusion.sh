@@ -21,6 +21,10 @@
 # The image domain dominates the time: 3 phantoms x 41,580 patches x NSAMP_RECON
 # samples. The log prints an ETA after the first chunk. Each finished phantom is
 # saved, so if it hits TIMEOUT, resubmit the same line and it continues.
+#
+# The WGAN, scored the same way (one pass per patch, much faster):
+#
+#     sbatch --account=$GROUP --qos=$GROUP --export=ALL,MODEL=wgan slurm/hipergator/ssim_diffusion.sh
 
 cd "$SLURM_SUBMIT_DIR"
 GROUP=${GROUP:-$(id -gn)}
@@ -32,6 +36,7 @@ conda activate "$ENV"
 nvidia-smi -L || true
 
 ARM=${ARM:-baseline3d_pu_matched}
+MODEL=${MODEL:-edm}                 # edm = diffusion; wgan = the baseline (nsamp forced to 1)
 NSAMP_RECON=${NSAMP_RECON:-16}
 cd src/diffusion
-srun python -u ssim_eval.py --train_arm "$ARM" --nsamp 256 --nsamp_recon "$NSAMP_RECON"
+srun python -u ssim_eval.py --model "$MODEL" --train_arm "$ARM" --nsamp 256 --nsamp_recon "$NSAMP_RECON"

@@ -123,11 +123,13 @@ cd ~/PCCT_jointmodeling/analysis
 - [ ] **9. Diffusion job** — `tail -f logs/edm_<id>.out`. Checkpoints:
   - `nvidia-smi -L` names an L4
   - `ALL CHECKS PASSED` from the smoke test (if not, the job stops — send the log)
+  - `preloaded 14 phantoms (10.8 GB) in ... s` — all training data now in memory
   - `it  200  loss ...` lines, with loss drifting below ~1.0 as it learns
   - ends with `wrote .../outputs/coverage_baseline3d_pu_matched_Y.json`
 
 - [ ] **10. WGAN job** — `tail -f logs/wgan_<id>.out`. Checkpoints:
   - `40 epochs over 1738800 train patches at batch 64 -> 1086750 iterations`
+  - `preloaded 14 phantoms (10.8 GB) in ... s` — all training data now in memory
   - `it ... mse ... rmae ...` lines, with MSE falling
   - ends with `wrote .../outputs/wgan_eval_baseline3d_pu_matched.json`
   - **If it stops with TIMEOUT instead**, resubmit — it resumes from its last checkpoint:
@@ -135,6 +137,12 @@ cd ~/PCCT_jointmodeling/analysis
     sbatch --account=<group> --qos=<group> slurm/hipergator/train_wgan.sh
     ```
     Repeat until the evaluation line appears. The same works for the diffusion job.
+  - **Started before the 2026-09-14 loader fix?** A log with no `preloaded` line that
+    runs at ~2.8 it/s is spending ~90% of its time re-decompressing phantom files
+    (measured). Commit and push the fix on your machine, `git pull` in
+    `~/PCCT_jointmodeling` on HiPerGator, then `scancel <id>` and resubmit the same
+    script. It resumes from its last checkpoint (saved every 10k iterations), so at
+    most ~10k iterations are redone.
 
 - [ ] **10b. Windowed SSIM + sinogram error figure** (after step 9; GPU, hours).
   The SSIM in the step-9 log is one global window and reads ~0.9999 for anything.
@@ -145,8 +153,21 @@ cd ~/PCCT_jointmodeling/analysis
   - `posterior-mean RMSE ... (coverage.py: 4.2591 ...)` — the two agree to a few decimals
   - `chunk 1/21 ... eta N min` — the real time per phantom; three phantoms in total
   - ends with `wrote .../outputs/ssim_baseline3d_pu_matched_Y_on_baseline3d_pu_matched.json`
-    and `figures/sino_error_*.png`
+    and `figures/sino_error_*.png`, `figures/profiles_*_bin{1,5,9}.png`
   On TIMEOUT, resubmit the same line; finished phantoms are kept.
+  For another channel, view or bin — no GPU, also works on a copied-home slice file:
+  ```bash
+  cd src/diffusion && python plot_profiles.py \
+    ../../outputs/ssim_baseline3d_pu_matched_Y_on_baseline3d_pu_matched/slice_ph000_row16.npz \
+    --bin 0 --channel 1200 --view 45
+  ```
+  After step 10 (WGAN trained), score the WGAN the same way — one pass per patch, much faster:
+  ```bash
+  sbatch --account=<group> --qos=<group> --export=ALL,MODEL=wgan slurm/hipergator/ssim_diffusion.sh
+  ```
+  Whichever of the two finishes second also writes `figures/profiles_compare_*_bin{1,5,9}.png`
+  (input, label, diffusion and WGAN on one sinogram trace), and step 11's table gains
+  the windowed-SSIM rows.
 
 ## D · The result
 

@@ -39,13 +39,17 @@ def main():
     ap.add_argument('--out', default=None)
     ap.add_argument('--log_every', type=int, default=200)
     ap.add_argument('--ckpt_every', type=int, default=10_000)
+    ap.add_argument('--preload', action='store_true',
+                    help='load every train phantom into RAM once (~0.77 GB each) instead of '
+                         're-decompressing a file every 64 batches -- measured at ~90%% of the '
+                         'WGAN iteration time. Refuses to start if the memory is not there.')
     ap.add_argument('--resume', action='store_true',
                     help='continue from out/ckpt.pt if it exists (no-op otherwise)')
     a = ap.parse_args()
 
     out = a.out or os.path.join(OUT, 'edm_%s_%s' % (a.arm, a.target))
     os.makedirs(out, exist_ok=True)
-    ds = DiffusionPatches(a.arm, 'train', a.patch, a.target)
+    ds = DiffusionPatches(a.arm, 'train', a.patch, a.target, preload=a.preload)
     print('arm=%s target=%s  cond_ch=%d tgt_ch=%d  patch=%d'
           % (a.arm, a.target, ds.cond_ch, ds.tgt_ch, a.patch), flush=True)
 
