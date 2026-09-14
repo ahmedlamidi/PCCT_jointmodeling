@@ -14,33 +14,35 @@ below comes from UFRC's own documentation, linked inline.
 | Torch | `pip install` every job | once: `pip install torch --index-url https://download.pytorch.org/whl/cu128` — covers L4 (CUDA ≥ 12.0) and B200 (≥ 12.8.1) ([UFRC conda](http://docs.rc.ufl.edu/software/conda_installing_packages/)) |
 | Storage | — | home is 40 GB; **all job I/O belongs on `/blue`** ([storage](https://docs.rc.ufl.edu/quickstart/practical_storage/)). This writes ~20 GB |
 
-## 1 · Copy the project to /blue
+## 1 · Clone in home, write to /blue
 
-Git will **not** carry everything: the PcTK tables and `analysis/cache/` are
-gitignored, and the data job crashes without them. From the `PCCT_jointmodeling/`
-root on your machine:
+The code comes from `git clone` into `~/PCCT_jointmodeling`. Everything jobs write
+goes under `analysis/outputs/` (dataset ~15 GB per arm, checkpoints, results) and
+`analysis/logs/`; those two are symlinks to `/blue`, because home is 40 GB. Make the
+symlinks before running anything — `paths.py` creates `outputs/` as a real
+directory on first import:
 
 ```bash
-rsync -avP \
-  --exclude '.git/' \
-  --exclude 'analysis/outputs/' --exclude 'analysis/figures/' --exclude 'analysis/logs/' \
-  --exclude '__pycache__/' --exclude '*.pyc' --exclude 'PcTK_3.24a.zip' \
-  --exclude 'PcTK_3.24a/2_outputdata/' --exclude 'PcTK_3.24a/3_src/' --exclude 'PcTK_3.24a/4_doc/' \
-  --include 'PcTK_3.24a/5_refdata/dat_nCovE_ver3.2_dpix_225_dz_1600_r0_24_esig_2.0.mat' \
-  --exclude 'PcTK_3.24a/5_refdata/*' \
-  ./ <gatorlink>@hpg.rc.ufl.edu:/blue/<group>/<gatorlink>/PCCT_jointmodeling/
+B=/blue/<group>/<gatorlink>/pcct
+mkdir -p $B/outputs $B/logs
+cd ~/PCCT_jointmodeling/analysis && ln -s $B/outputs outputs && ln -s $B/logs logs
 ```
 
-**430 MB, 108 files** (checked with a local dry run): all code, PcTK's `1_inputdata`,
-the one covariance table the code reads from `5_refdata`, and `analysis/cache`.
-Keep the `--include` line *before* the `5_refdata/*` exclude — rsync applies the
-first rule that matches.
+Git will **not** carry the PcTK tables or `analysis/cache/` (gitignored), and the
+data job crashes without them. From the `PCCT_jointmodeling/` root on your machine:
 
-What it deliberately leaves out:
-- **`.git/`** — 2.45 GiB of loose objects, most of them unreachable (leftovers from
-  an earlier `git add` of large files). Nothing on HiPerGator needs git history.
-- **The rest of `5_refdata`** — reference sinograms and images the code never reads.
-- **Your outputs and figures.**
+```bash
+rsync -avPR --exclude '.DS_Store' \
+  analysis/cache \
+  PcTK_3.24a/1_inputdata \
+  PcTK_3.24a/5_refdata/dat_nCovE_ver3.2_dpix_225_dz_1600_r0_24_esig_2.0.mat \
+  <gatorlink>@hpg.rc.ufl.edu:/home/<gatorlink>/PCCT_jointmodeling/
+```
+
+**~430 MB** (checked with a local dry run): PcTK's `1_inputdata`, the one
+covariance table the code reads from `5_refdata`, and `analysis/cache`. `-R` keeps
+the paths relative, so each lands at the same place in the clone. The rest of
+`5_refdata` (reference sinograms and images) is never read.
 
 PcTK is licensed for your own use — this copies it to your own allocation, it does
 not redistribute it.
@@ -48,7 +50,7 @@ not redistribute it.
 ## 2 · One-time environment (login node)
 
 ```bash
-cd /blue/<group>/<gatorlink>/PCCT_jointmodeling/analysis
+cd ~/PCCT_jointmodeling/analysis
 bash slurm/hipergator/setup_env.sh
 ```
 
@@ -58,7 +60,7 @@ bash slurm/hipergator/setup_env.sh
 bash slurm/hipergator/preflight.sh
 ```
 
-It checks the repo is on `/blue`, the gitignored inputs arrived, your account and
+It checks `outputs/` and `logs/` resolve to `/blue`, the gitignored inputs arrived, your account and
 QOS (`slurmInfo`), the environment imports torch, and finishes with
 `sbatch --test-only` on all three jobs — the scheduler validates partition,
 account, QOS and resources **without running anything**. It must end with
