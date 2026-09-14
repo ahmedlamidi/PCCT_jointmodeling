@@ -136,6 +136,18 @@ cd ~/PCCT_jointmodeling/analysis
     ```
     Repeat until the evaluation line appears. The same works for the diffusion job.
 
+- [ ] **10b. Windowed SSIM + sinogram error figure** (after step 9; GPU, hours).
+  The SSIM in the step-9 log is one global window and reads ~0.9999 for anything.
+  ```bash
+  sbatch --account=<group> --qos=<group> slurm/hipergator/ssim_diffusion.sh
+  ```
+  Checkpoints in `logs/ssim_<id>.out`:
+  - `posterior-mean RMSE ... (coverage.py: 4.2591 ...)` — the two agree to a few decimals
+  - `chunk 1/21 ... eta N min` — the real time per phantom; three phantoms in total
+  - ends with `wrote .../outputs/ssim_baseline3d_pu_matched_Y_on_baseline3d_pu_matched.json`
+    and `figures/sino_error_*.png`
+  On TIMEOUT, resubmit the same line; finished phantoms are kept.
+
 ## D · The result
 
 - [ ] **11. Compare.**

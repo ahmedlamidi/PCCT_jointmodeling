@@ -66,17 +66,35 @@ class Geometry:
         return self.par_to_fan(self.forward_parallel(img))
 
     # ------------------------------------------------------------------
-    def fbp(self, g):
-        """Fan sinogram (nch, nview) -> image. Rebin, ramp filter, backproject."""
+    def fbp(self, g, window=None):
+        """Fan sinogram (nch, nview) -> image. Rebin, ramp filter, backproject.
+        window: see fbp_parallel."""
         out = np.empty_like(g)
         for i in range(self.nch):                                       # fan -> parallel
             out[i] = np.interp((self.beta - self.gam[i]) % (2 * np.pi),
                                self.beta, g[i], period=2 * np.pi)
         p = np.stack([np.interp(self.tu, self.t, out[:, k]) for k in range(self.nview)], 1)
+        return self.fbp_parallel(p, window)
 
+    def fbp_parallel(self, p, window=None):
+        """Parallel sinogram (nch, nview) on the uniform t grid self.tu -- what
+        forward_parallel() produces -- -> image. Ramp filter, backproject.
+
+        window=None: plain ramp up to the DETECTOR Nyquist (the original behaviour).
+        window='hann': ramp x Hann, cut off at the IMAGE Nyquist 1/(2*pix_mm) (Kak &
+        Slaney, Principles of Computerized Tomographic Imaging, ch. 3). The channel
+        pitch at isocentre (0.125 mm) is ~8x finer than a 256-pixel image (0.98 mm),
+        so with the plain ramp, noise the image cannot represent aliases into it: a
+        noisy count sinogram reconstructs as noise (measured, see ssim_eval.py)."""
         dt = self.tu[1] - self.tu[0]
         npad = 1 << int(np.ceil(np.log2(2 * self.nch)))
-        filt = 2 * np.abs(np.fft.fftfreq(npad)) / dt
+        f = np.fft.fftfreq(npad)                                         # cycles/sample
+        filt = 2 * np.abs(f) / dt
+        if window == 'hann':
+            fc = dt / (2 * self.pix_mm)                                  # image Nyquist, cycles/sample
+            filt = filt * np.where(np.abs(f) < fc, 0.5 * (1 + np.cos(np.pi * f / fc)), 0.0)
+        elif window is not None:
+            raise ValueError('window must be None or "hann", got %r' % (window,))
         pf = np.real(np.fft.ifft(np.fft.fft(p, npad, axis=0) * filt[:, None], axis=0))[:self.nch]
 
         ax = (np.arange(self.npix) - (self.npix - 1) / 2) * self.pix_mm
