@@ -15,10 +15,23 @@ warn() { echo "  WARN  $*"; }
 bad()  { echo "  FAIL  $*"; fail=1; }
 
 echo "== location =="
-case "$(pwd -P)" in
-  /blue/*) ok "repo is on /blue ($(pwd -P))" ;;
-  *)       bad "repo is at $(pwd -P). Move it under /blue/$GROUP/$USER -- home is 40 GB and this writes ~20 GB" ;;
-esac
+# The repo may live in home; what must be on /blue is where jobs WRITE. outputs/
+# holds the dataset (~15 GB per arm) and checkpoints; home is 40 GB. Either put
+# the whole repo on /blue, or symlink these two dirs there (RUNBOOK step 3b).
+for d in outputs logs; do
+  if [ -e "$d" ] || [ -L "$d" ]; then
+    real=$(cd "$d" 2>/dev/null && pwd -P) || { bad "$d is a broken symlink -> $(readlink "$d")"; continue; }
+    case "$real" in
+      /blue/*) ok "$d -> $real" ;;
+      *)       bad "$d is at $real, not /blue -- home is 40 GB and outputs/ gets ~20 GB" ;;
+    esac
+  else
+    case "$(pwd -P)" in
+      /blue/*) ok "$d will be created under /blue ($(pwd -P)/$d)" ;;
+      *)       bad "$d missing and repo is in $(pwd -P) -- symlink it to /blue (RUNBOOK step 3b)" ;;
+    esac
+  fi
+done
 
 echo "== gitignored inputs (git will NOT carry these -- rsync them) =="
 for f in ../PcTK_3.24a/1_inputdata/pmf_S0_Al2.0_120kVp.mat \
