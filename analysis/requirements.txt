@@ -1,0 +1,7 @@
+numpy>=1.24
+scipy>=1.10
+h5py>=3.8
+matplotlib>=3.7
+# torch is NOT pinned here: install the build that matches the cluster's CUDA,
+# e.g.  pip install torch --index-url https://download.pytorch.org/whl/cu121
+torch>=2.1

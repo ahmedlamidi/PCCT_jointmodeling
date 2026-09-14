@@ -1,0 +1,45 @@
+# ---- kept from the original file --------------------------------------------
+/CLAUDE.md
+/PcTK_3.24a.zip
+
+# ---- third-party, licensed: do not push -------------------------------------
+# PcTK is distributed under a signed licence agreement (no redistribution), and
+# the directory is 2.7 GB, mostly .mat/.flt tables. Keep it out of git entirely.
+/PcTK_3.24a/
+
+# ---- data -------------------------------------------------------------------
+*.npz
+*.npy
+*.mat
+*.flt
+*.raw
+*.data
+*.h5
+*.hdf5
+*.zip
+*.pt
+*.pth
+*.ckpt
+*.log
+analysis/outputs/
+analysis/cache/
+logs/
+
+# ---- pictures ---------------------------------------------------------------
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tif
+*.tiff
+*.webp
+*.svg
+*.eps
+*.pdf
+analysis/figures/
+
+# ---- python / editor clutter ------------------------------------------------
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
