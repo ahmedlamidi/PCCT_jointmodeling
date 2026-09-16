@@ -16,6 +16,7 @@ from paths import OUT
 from data import DiffusionPatches
 from unet import UNet
 from edm import EDMPrecond, edm_loss
+from trainlog import CsvLog
 
 
 def main():
@@ -83,6 +84,13 @@ def main():
                         it=it, cfg=vars(a), cond_ch=ds.cond_ch, tgt_ch=ds.tgt_ch), tmp)
         os.replace(tmp, ck)
 
+    # curves for after training: out/train_log.csv, one row per log line (trainlog.py)
+    job = os.environ.get('SLURM_JOB_ID', '')
+    log = CsvLog(os.path.join(out, 'train_log.csv'),
+                 ['it', 'loss', 'loss_std', 'lr', 'it_per_s', 'elapsed_s', 'job'], keep_upto=start - 1)
+    if log.kept:
+        print('train_log.csv: kept %d rows up to iteration %d' % (log.kept, start - 1), flush=True)
+
     t0 = time.time(); run = []
     for it in range(start, a.iters + 1):
         for g in opt.param_groups:                      # linear warmup
@@ -105,8 +113,11 @@ def main():
 
         run.append(loss.item())
         if it % a.log_every == 0:
-            print('it %7d  loss %.5f  %.1f it/s' % (it, np.mean(run[-a.log_every:]),
-                  (it - start + 1) / (time.time() - t0)), flush=True)
+            rate = (it - start + 1) / (time.time() - t0)
+            print('it %7d  loss %.5f  %.1f it/s' % (it, np.mean(run), rate), flush=True)
+            log.row(it=it, loss=float(np.mean(run)), loss_std=float(np.std(run)),
+                    lr=opt.param_groups[0]['lr'], it_per_s=rate, elapsed_s=time.time() - t0, job=job)
+            run = []                                     # the window is the interval
         if it % a.ckpt_every == 0 or it == a.iters:
             save(it)
     print('done ->', out)

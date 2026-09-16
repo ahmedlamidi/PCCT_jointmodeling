@@ -170,6 +170,21 @@ cd ~/PCCT_jointmodeling/analysis
     ../../outputs/ssim_baseline3d_pu_matched_Y_on_baseline3d_pu_matched/slice_ph000_row16.npz \
     --bin 0 --channel 1200 --view 45
   ```
+  Every plot as its own figure (no overviews) — also no GPU; add `--preview` for a
+  `..._preview/` slice file (no std figure, no band):
+  ```bash
+  cd src/diffusion && python plot_singles.py <slice_ph000_row16.npz> --out <folder>
+  ```
+  Uncertainty map (posterior std), error map and |error|/std map of the whole sinogram, per bin:
+  ```bash
+  cd src/diffusion && python plot_maps.py <slice_ph000_row16.npz> --out <folder>            # diffusion
+  cd src/diffusion && python plot_maps.py <ssim_wgan_.../slice_ph000_row16.npz> --out <folder> --model_label WGAN
+  ```
+  Does the uncertainty track the error? Per-bin Spearman correlation and reliability curves
+  (pixels grouped by predicted std vs their actual RMSE; `--region head|air|all`):
+  ```bash
+  cd src/diffusion && python plot_unc_vs_err.py <slice_ph000_row16.npz> --out <folder>
+  ```
   After step 10 (WGAN trained), score the WGAN the same way — one pass per patch, much faster:
   ```bash
   sbatch --account=<group> --qos=<group> --export=ALL,MODEL=wgan slurm/hipergator/ssim_diffusion.sh
@@ -189,7 +204,16 @@ cd ~/PCCT_jointmodeling/analysis
 
 - [ ] **12. Bring the results home.** From your machine:
   ```bash
-  rsync -avP <gatorlink>@hpg.rc.ufl.edu:/blue/<group>/<gatorlink>/pcct/outputs/{compare,coverage,wgan_eval}_* analysis/outputs/
+  rsync -avP --include='compare_*' --include='coverage_*' --include='wgan_eval_*' --include='ssim_*.json' \
+    --exclude='*' <gatorlink>@hpg.rc.ufl.edu:/blue/<group>/<gatorlink>/pcct/outputs/ analysis/outputs/
+  ```
+  Training curves — one CSV per model, one row per 200 iterations (`src/trainlog.py`;
+  runs started or resumed after 2026-09-14 only — earlier ones have just the SLURM logs):
+  ```bash
+  rsync -avP --prune-empty-dirs --include='edm_*/' --include='wgan_*/' --include='train_log.csv*' \
+    --exclude='*' <gatorlink>@hpg.rc.ufl.edu:/blue/<group>/<gatorlink>/pcct/outputs/ analysis/outputs/
+  rsync -avP --include='edm_*' --include='wgan_*' --exclude='*' \
+    <gatorlink>@hpg.rc.ufl.edu:/blue/<group>/<gatorlink>/pcct/logs/ analysis/logs/
   ```
 
 How to read the table: expect the WGAN to win RMSE/PSNR — its loss weights MSE at
@@ -219,3 +243,39 @@ sbatch --account=<group> --qos=<group> --export=ALL,TAU=0,ARM=baseline3d_matched
 ```
 Then evaluate the already-trained models on it. Do **not** rebuild the
 normalisation from that arm.
+
+---
+
+## E · Morovati et al.'s own problem (separate arm, optional)
+
+Their phantom, not ours: a water sphere with five ellipsoids of different tissues
+(soft tissue, adipose, grey/white matter, blood, cortical bone), 256³ voxels at
+0.113 mm, 10 train + 5 test, NIST ICRU-44 attenuation. Every matching choice is a
+default of `src/generate_morovati_dataset.py`; its docstring lists what is matched,
+what is not, and why. Independent of steps 1–12 — it writes only
+`outputs/morovati_match/` and never touches `outputs/norm_stats.json`.
+
+- [ ] **13. Generate** (CPU, ~4 h: ~4 min pile-up grid, then ~15 min per phantom —
+  measured locally at 4 views and scaled to 180; peak memory 1.7 GB at 4 views, a
+  few GB at 180).
+  ```bash
+  sbatch --account=<group> --qos=<group> slurm/hipergator/gen_morovati.sh
+  ```
+  Checkpoints in `logs/morovati_<id>.out`:
+  ```
+  phantoms: 10 train / 0 val / 5 test
+  materials as a*brain + b*cortical bone (NIST ICRU-44, fit 20-120 keV):   <- six lines, max err <= 0.84%
+  object: 256^3 voxels x 0.113 mm = 28.9 mm cube, sphere 26.0 mm across
+  pile-up grid: brain-eq 0.00..2.75 cm (12)  x  bone-eq -0.11..2.75 cm (13) = 156 points
+  detector plane 272 ch x 256 rows, 180 views over 180 deg
+  patches: 1023 per projection, 2762100 total   (theirs: 1023 / 1,841,400 for 10 phantoms)
+    train  1  adipose/blood/...  brain-eq<=2.6 cm  bone-eq ...  X(180, 256, 272, 9)  ...s
+  ...
+  normalisation NOT built: outputs/norm_stats.json belongs to the head arm.
+  ```
+  1023 per projection is theirs exactly; the total is 1.5x theirs only because it
+  counts the 5 test phantoms too. A `path outside the pile-up grid` stop means the
+  phantom settings were changed without the grid following — send the log.
+
+Training on this arm is not wired up yet: it needs its own normalisation file
+first (the one in `outputs/` belongs to the head arm and must not be overwritten).

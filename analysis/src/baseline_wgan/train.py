@@ -24,6 +24,7 @@ from paths import OUT
 from data import DiffusionPatches
 from models import Generator, Discriminator, SmallViT
 from losses import critic_loss, generator_loss
+from trainlog import CsvLog
 
 
 def main():
@@ -118,7 +119,12 @@ def main():
                         oD=oD.state_dict(), it=it, cfg=vars(a), ch=ch), tmp)
         os.replace(tmp, ck)
 
-    t0 = time.time(); hist = []
+    # curves for after training: out/train_log.csv (trainlog.py). Columns come from the
+    # generator's loss terms, so the file is opened at the first log line.
+    job = os.environ.get('SLURM_JOB_ID', '')
+    log = None
+
+    t0 = time.time(); hist = []; dh = []
     for it in range(start, a.iters + 1):
         for _ in range(a.n_critic):
             x, y = ds.batch(a.batch)
@@ -136,12 +142,23 @@ def main():
                                    rmae_floor=a.rmae_floor)
         oG.zero_grad(set_to_none=True); lG.backward(); oG.step()
 
-        hist.append(terms)
+        hist.append(terms); dh.append(lD.item())       # lD: the last critic step
         if it % a.log_every == 0:
-            m = {k: float(np.mean([h[k] for h in hist[-a.log_every:]])) for k in terms}
+            m = {k: float(np.mean([h[k] for h in hist])) for k in terms}
+            rate = (it - start + 1) / (time.time() - t0)
             print('it %7d  D %+8.3f  G %8.3f  mse %.5f  rmae %.4f  adv %+.3f  %.1f it/s'
-                  % (it, lD.item(), m['total'], m['mse'], m['rmae'], m['adv'],
-                     (it - start + 1) / (time.time() - t0)), flush=True)
+                  % (it, lD.item(), m['total'], m['mse'], m['rmae'], m['adv'], rate), flush=True)
+            if log is None:
+                log = CsvLog(os.path.join(out, 'train_log.csv'),
+                             ['it', 'D_mean', 'D_last'] + ['G_' + k for k in terms]
+                             + ['it_per_s', 'elapsed_s', 'job'], keep_upto=start - 1)
+                if log.kept:
+                    print('train_log.csv: kept %d rows up to iteration %d' % (log.kept, start - 1),
+                          flush=True)
+            log.row(it=it, D_mean=float(np.mean(dh)), D_last=lD.item(),
+                    **{'G_' + k: v for k, v in m.items()}, it_per_s=rate,
+                    elapsed_s=time.time() - t0, job=job)
+            hist, dh = [], []                  # was never cleared: ~1M dicts by the end
         if it % a.ckpt_every == 0 or it == a.iters:
             save(it)
     print('done ->', out)

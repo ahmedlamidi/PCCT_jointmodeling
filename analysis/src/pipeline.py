@@ -20,7 +20,10 @@ import pileup_yang as PY
 class Forward:
     def __init__(self, cfg=None, tau_ns=0.0, t_p_ns=10.0, T_ns=30.0, vps=4000.0,
                  grid_brain=None, grid_bone=None, verbose=True, backend='mc',
-                 mc_frames=250, pileup_mode='paralyzable'):
+                 mc_frames=250, pileup_mode='paralyzable', mu=None):
+        # mu: optional (170, 2) attenuation basis [soft, bone] in cm^-1 replacing
+        # PcTK's m2_mukE.csv -- e.g. nist_materials.basis() (NIST brain + cortical
+        # bone) for the Morovati phantom arm. None keeps PcTK's, as every other arm.
         # pileup_mode: 'paralyzable' (Bierme & Roessl 2012, Roessl et al 2016 --
         # what Morovati et al. 2025 use, so it is the default here) or
         # 'seminonparalyzable' (Yang et al. 2025). They agree below lam*tau ~ 0.1
@@ -34,6 +37,8 @@ class Forward:
         self.pileup_mode = pileup_mode
         self.cfg = dict(P.CFG if cfg is None else cfg)
         self.d   = P.load()
+        if mu is not None:          # before the pile-up grid, which is built through self.spec
+            self.d['mu'] = np.asarray(mu, float)[:170]
         self.eth = np.asarray(self.cfg['ETH'], float); self.Nl = len(self.eth)
         R, Rideal, _ = P.responses(self.d, self.cfg)
         self.R, self.Rideal = R, Rideal
@@ -68,8 +73,14 @@ class Forward:
     def spec(self, vb, vbo):
         """(...,) path lengths -> (170, ...) attenuated spectrum."""
         vb = np.asarray(vb, float); vbo = np.asarray(vbo, float)
-        return self.d['S'][:, None] * np.exp(-np.outer(self.d['mu'][:, 0], vb.ravel())
-                                             - np.outer(self.d['mu'][:, 1], vbo.ravel()))
+        att = (np.outer(self.d['mu'][:, 0], vb.ravel())
+               + np.outer(self.d['mu'][:, 1], vbo.ravel()))
+        # Transmission cannot exceed 1. A NEGATIVE bone-equivalent path (adipose,
+        # water on the NIST basis) is physical only alongside enough brain-
+        # equivalent path; a pile-up grid corner such as (0 cm, -0.1 cm) is not,
+        # and at 1 keV exp(+0.1 * 7260) overflows -> 0 * inf = NaN. The clamp is a
+        # no-op for every non-negative path, so the head arms are unchanged.
+        return self.d['S'][:, None] * np.exp(-np.maximum(att, 0.0))
 
     # ---- no-pileup analytic path ------------------------------------------
     def _mean_cov_nopile(self, sp):

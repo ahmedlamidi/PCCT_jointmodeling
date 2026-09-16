@@ -64,9 +64,12 @@ class Generator(nn.Module):
 class Discriminator(nn.Module):
     """4 residual blocks 64->128->256->512, then dense. No sigmoid (WGAN critic).
 
-    InstanceNorm is used rather than BatchNorm: the gradient penalty is applied
-    per-sample, and BatchNorm makes the critic's output depend on the rest of the
-    batch, which invalidates it (Gulrajani et al. 2017, section 4).
+    NO normalisation in the critic (every block is built with norm=False; an earlier
+    version of this docstring wrongly said InstanceNorm). BatchNorm is ruled out: the
+    gradient penalty is applied per sample, and BatchNorm makes the critic's output
+    depend on the rest of the batch, which invalidates it (Gulrajani et al. 2017,
+    section 4). The GENERATOR's ResBlocks do use InstanceNorm. Neither choice is
+    stated in Morovati et al.
     """
 
     def __init__(self, ch=9, base=64, patch=16):

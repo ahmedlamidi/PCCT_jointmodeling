@@ -68,7 +68,11 @@ def plot(sl, b, channel=None, view=None, label=None, path='profiles.png', title=
         if logy:        # air and head differ ~200x in counts: log axis shows both
             ax.set_yscale('log'); axr.set_yscale('symlog', linthresh=10)
         if s.max() > 0:     # no std (WGAN, or a preview): no band and no legend entry for one
-            ax.fill_between(x, np.maximum(m - 2 * s, 0.5 if logy else -np.inf), m + 2 * s,
+            # log axis: clip at the smallest plotted value, NOT a fixed 0.5 counts -- bin 1
+            # through the head is ~0.001-0.01 counts and a 0.5 clip drew a false band there
+            pos = np.concatenate([z[z > 0] for z in (i, l, m)])
+            floor = (pos.min() if pos.size else 1e-6) if logy else -np.inf
+            ax.fill_between(x, np.maximum(m - 2 * s, floor), m + 2 * s,
                             color='C0', alpha=0.25, lw=0, label='output $\\pm$2 std')
         ax.plot(x, i, color='0.55', lw=1.0, label='distorted input')
         ax.plot(x, l, color='k', lw=1.5, label='clean label')

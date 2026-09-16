@@ -1,0 +1,8 @@
+Diffusion (EDM)
+  200000 iterations
+  first logged loss 0.8993, final 0.00346
+  speed 9.5 it/s
+
+WGAN-GP
+  46000 / 1086750 iterations (4.2%)
+  speed 7.7 it/s -> ~38 h left
